@@ -65,7 +65,7 @@ func TestCreateCACertificate(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			der, err := CreateCACertificate(caID, tc.pub, tc.alg, minSerial, uint64(maxSerial), notBefore, notAfter)
+			der, err := CreateCACertificate(caID, tc.pub, tc.alg, nil, minSerial, uint64(maxSerial), notBefore, notAfter)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -175,13 +175,38 @@ func TestCreateCACertificateMaxSerial(t *testing.T) {
 	caID, _ := ParseTrustAnchorID("32473.1")
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	now := time.Now()
-	der, err := CreateCACertificate(caID, &key.PublicKey, SignatureP256SHA256, MTCMinSerial, MTCMaxSerial, now, now.Add(time.Hour))
+	der, err := CreateCACertificate(caID, &key.PublicKey, SignatureP256SHA256, nil, MTCMinSerial, MTCMaxSerial, now, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// INTEGER 2^64-1 needs a leading zero octet.
 	if !bytes.Contains(der, []byte{0x02, 0x09, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}) {
 		t.Error("maxSerial 2^64-1 not encoded as a positive 9-octet INTEGER")
+	}
+}
+
+func TestCreateCACertificateSerial(t *testing.T) {
+	caID, _ := ParseTrustAnchorID("32473.1")
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	now := time.Now()
+	maxSerial20 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 159), big.NewInt(1))
+	for _, want := range []*big.Int{big.NewInt(1), big.NewInt(0x1234), maxSerial20} {
+		der, err := CreateCACertificate(caID, &key.PublicKey, SignatureP256SHA256, want, MTCMinSerial, MTCMaxSerial, now, now.Add(time.Hour))
+		if err != nil {
+			t.Fatalf("serial %v: %v", want, err)
+		}
+		var cert struct {
+			TBS struct {
+				Version int `asn1:"optional,explicit,default:0,tag:0"`
+				Serial  *big.Int
+			}
+		}
+		if _, err := asn1.Unmarshal(der, &cert); err != nil {
+			t.Fatal(err)
+		}
+		if cert.TBS.Serial.Cmp(want) != 0 {
+			t.Errorf("serial = %v, want %v", cert.TBS.Serial, want)
+		}
 	}
 }
 
@@ -246,17 +271,21 @@ func TestCreateCACertificateRejects(t *testing.T) {
 		name     string
 		pub      crypto.PublicKey
 		alg      SignatureAlgorithm
+		serial   *big.Int
 		min, max uint64
 		nb, na   time.Time
 	}{
-		{"minSerial too small", &p256.PublicKey, SignatureP256SHA256, MTCMinSerial - 1, MTCMinSerial, now, later},
-		{"min > max", &p256.PublicKey, SignatureP256SHA256, MTCMinSerial + 1, MTCMinSerial, now, later},
-		{"wrong curve", &p256.PublicKey, SignatureP384SHA384, MTCMinSerial, MTCMaxSerial, now, later},
-		{"wrong key type", edPub, SignatureP256SHA256, MTCMinSerial, MTCMaxSerial, now, later},
-		{"bad validity", &p256.PublicKey, SignatureP256SHA256, MTCMinSerial, MTCMaxSerial, later, now},
+		{"zero serial", &p256.PublicKey, SignatureP256SHA256, big.NewInt(0), MTCMinSerial, MTCMaxSerial, now, later},
+		{"negative serial", &p256.PublicKey, SignatureP256SHA256, big.NewInt(-1), MTCMinSerial, MTCMaxSerial, now, later},
+		{"21-octet serial", &p256.PublicKey, SignatureP256SHA256, new(big.Int).Lsh(big.NewInt(1), 159), MTCMinSerial, MTCMaxSerial, now, later},
+		{"minSerial too small", &p256.PublicKey, SignatureP256SHA256, nil, MTCMinSerial - 1, MTCMinSerial, now, later},
+		{"min > max", &p256.PublicKey, SignatureP256SHA256, nil, MTCMinSerial + 1, MTCMinSerial, now, later},
+		{"wrong curve", &p256.PublicKey, SignatureP384SHA384, nil, MTCMinSerial, MTCMaxSerial, now, later},
+		{"wrong key type", edPub, SignatureP256SHA256, nil, MTCMinSerial, MTCMaxSerial, now, later},
+		{"bad validity", &p256.PublicKey, SignatureP256SHA256, nil, MTCMinSerial, MTCMaxSerial, later, now},
 	}
 	for _, tc := range cases {
-		if _, err := CreateCACertificate(caID, tc.pub, tc.alg, tc.min, tc.max, tc.nb, tc.na); err == nil {
+		if _, err := CreateCACertificate(caID, tc.pub, tc.alg, tc.serial, tc.min, tc.max, tc.nb, tc.na); err == nil {
 			t.Errorf("%s: expected error", tc.name)
 		}
 	}

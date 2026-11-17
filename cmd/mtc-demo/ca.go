@@ -8,12 +8,16 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
+	"flag"
 	"fmt"
+	"math/big"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/cryptobyte"
+	cbasn1 "golang.org/x/crypto/cryptobyte/asn1"
 
 	"mtc"
 )
@@ -29,7 +33,8 @@ Subcommands:
   checkpoint                  Display current checkpoint hash
   issue <index>               Issue a certificate for a log entry
   prune <min-index>           Prune entries below min-index
-  cert [public-key.pem]       Generate the MTC CA certificate (§5.5)
+  cert [-serial <n>] [-public-key <file>]
+                              Generate the MTC CA certificate (§5.5)
 `)
 		return nil
 	}
@@ -372,8 +377,19 @@ func cmdCAPrune(args []string) error {
 const maxCALogNumber = 5
 
 func cmdCACert(args []string) error {
-	if len(args) > 1 {
-		return fmt.Errorf("usage: mtc-demo ca cert [public-key.pem]")
+	const usage = "usage: mtc-demo ca cert [-serial <n>|0x<hex>|random] [-public-key <file.pem>]"
+	fs := flag.NewFlagSet("ca cert", flag.ContinueOnError)
+	serialFlag := fs.String("serial", "1", "CA certificate serial number: decimal, 0x-prefixed hex, or \"random\"")
+	pubKeyFile := fs.String("public-key", "", "PEM \"PUBLIC KEY\" file of an externally-generated CA cosigner key (default: the CA cosigner in the state file)")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("%s: %w", usage, err)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("%s: unexpected argument %q", usage, fs.Arg(0))
+	}
+	serial, err := parseCACertSerial(*serialFlag)
+	if err != nil {
+		return err
 	}
 
 	s, err := requireState()
@@ -390,21 +406,21 @@ func cmdCACert(args []string) error {
 		alg       mtc.SignatureAlgorithm
 		keySource string
 	)
-	if len(args) == 1 {
+	if *pubKeyFile != "" {
 		// Externally-generated CA cosigner key, e.g. held in an HSM.
-		data, err := os.ReadFile(args[0])
+		data, err := os.ReadFile(*pubKeyFile)
 		if err != nil {
 			return err
 		}
 		block, _ := pem.Decode(data)
 		if block == nil || block.Type != "PUBLIC KEY" {
-			return fmt.Errorf("%s: expected a PEM \"PUBLIC KEY\" block", args[0])
+			return fmt.Errorf("%s: expected a PEM \"PUBLIC KEY\" block", *pubKeyFile)
 		}
 		pub, alg, err = mtc.ParseCosignerPublicKey(block.Bytes)
 		if err != nil {
-			return fmt.Errorf("%s: %w", args[0], err)
+			return fmt.Errorf("%s: %w", *pubKeyFile, err)
 		}
-		keySource = args[0]
+		keySource = *pubKeyFile
 	} else {
 		// The CA cosigner's ID is the CA ID (§5.4).
 		var keyCfg *CosignerKeyConfig
@@ -415,7 +431,7 @@ func cmdCACert(args []string) error {
 			}
 		}
 		if keyCfg == nil {
-			return fmt.Errorf("no CA cosigner; run 'mtc-demo cosigner keygen %s <algorithm>' first, or pass a public key file", s.CAID)
+			return fmt.Errorf("no CA cosigner; run 'mtc-demo cosigner keygen %s <algorithm>' first, or pass -public-key <file>", s.CAID)
 		}
 		key, err := rebuildCosignerKey(*keyCfg)
 		if err != nil {
@@ -436,10 +452,15 @@ func cmdCACert(args []string) error {
 	notBefore := time.Now().Truncate(time.Second)
 	notAfter := notBefore.Add(365 * 24 * time.Hour)
 
-	certDER, err := mtc.CreateCACertificate(caID, pub, alg,
+	certDER, err := mtc.CreateCACertificate(caID, pub, alg, serial,
 		minSerial, maxSerial, notBefore, notAfter)
 	if err != nil {
 		return fmt.Errorf("creating CA certificate: %w", err)
+	}
+	if serial == nil {
+		if serial, err = certSerialNumber(certDER); err != nil {
+			return err
+		}
 	}
 
 	certFile := "ca-cert.pem"
@@ -449,6 +470,7 @@ func cmdCACert(args []string) error {
 
 	fmt.Printf("CA certificate generated:\n")
 	fmt.Printf("  Subject:    %s (CA ID)\n", caID)
+	fmt.Printf("  Serial:     0x%x\n", serial)
 	fmt.Printf("  Public key: %s (%s)\n", keySource, algorithmName(alg))
 	fmt.Printf("  Min serial: 0x%x (log %d, index %d)\n", minSerial, s.LogNumber, s.MinIndex)
 	fmt.Printf("  Max serial: 0x%x (log %d)\n", maxSerial, maxCALogNumber)
@@ -456,4 +478,37 @@ func cmdCACert(args []string) error {
 	fmt.Printf("  Size:       %d bytes\n", len(certDER))
 	fmt.Printf("  File:       %s\n", certFile)
 	return nil
+}
+
+// parseCACertSerial parses the "ca cert" -serial flag: "random" (returns
+// nil, so that a random serial is generated), a 0x-prefixed hex string, or
+// a decimal integer.
+func parseCACertSerial(s string) (*big.Int, error) {
+	if s == "random" {
+		return nil, nil
+	}
+	n, ok := new(big.Int), false
+	if hexStr, isHex := strings.CutPrefix(s, "0x"); isHex {
+		n, ok = n.SetString(hexStr, 16)
+	} else {
+		n, ok = n.SetString(s, 10)
+	}
+	if !ok {
+		return nil, fmt.Errorf("invalid -serial %q: want a decimal integer, 0x-prefixed hex, or \"random\"", s)
+	}
+	return n, nil
+}
+
+// certSerialNumber extracts the serialNumber from a DER X.509 certificate.
+func certSerialNumber(der []byte) (*big.Int, error) {
+	input := cryptobyte.String(der)
+	var cert, tbs cryptobyte.String
+	serial := new(big.Int)
+	if !input.ReadASN1(&cert, cbasn1.SEQUENCE) ||
+		!cert.ReadASN1(&tbs, cbasn1.SEQUENCE) ||
+		!tbs.SkipOptionalASN1(cbasn1.Tag(0).Constructed().ContextSpecific()) ||
+		!tbs.ReadASN1Integer(serial) {
+		return nil, fmt.Errorf("malformed certificate")
+	}
+	return serial, nil
 }

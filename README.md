@@ -101,20 +101,21 @@ mtc-demo ca add <common-name>            Add a TBS certificate entry to the log
 mtc-demo ca checkpoint                   Display current checkpoint and subtree hashes
 mtc-demo ca issue <index>                Issue a certificate for a log entry
 mtc-demo ca prune <min-index>            Prune entries below min-index
-mtc-demo ca cert [public-key.pem]        Generate the MTC CA certificate (ca-cert.pem)
+mtc-demo ca cert [-serial <n>] [-public-key <file>]
+                                         Generate the MTC CA certificate (ca-cert.pem)
 ```
 
 `ca cert` certifies the CA cosigner's public key. By default it uses the
 CA cosigner in the state file, i.e. the cosigner key whose ID equals the CA
-ID. Alternatively, pass a PEM `PUBLIC KEY` file to certify an
-externally-generated key (e.g. one held in an HSM); the signature algorithm
-is inferred from the key type (P-256, P-384, Ed25519, ML-DSA-44/65/87). For
-example:
+ID. Alternatively, pass a PEM `PUBLIC KEY` file with `-public-key` to
+certify an externally-generated key (e.g. one held in an HSM); the signature
+algorithm is inferred from the key type (P-256, P-384, Ed25519,
+ML-DSA-44/65/87). For example:
 
 ```sh
 openssl genpkey -algorithm ML-DSA-65 -out ca.key
 openssl pkey -in ca.key -pubout -out ca.pub
-mtc-demo ca cert ca.pub
+mtc-demo ca cert -public-key ca.pub
 ```
 
 It sets `minSerial` to the first available entry of the current log and
@@ -122,6 +123,15 @@ It sets `minSerial` to the first available entry of the current log and
 the CA's series of logs. Chrome's CQRP only trusts issuance log numbers 1
 through 5 for any given CA cosigner key; `ca cert` refuses to run if the
 current log number is above 5.
+
+The CA certificate's own serial number is set with `-serial`: a decimal
+integer, a `0x`-prefixed hex string, or `random` for a random 127-bit serial
+from a CSPRNG. It defaults to 1. For example:
+
+```sh
+mtc-demo ca cert -serial 0x1234 -public-key ca.pub
+mtc-demo ca cert -serial random
+```
 
 ### Cosigner Operations
 
@@ -306,6 +316,7 @@ caCertDER, _ := mtc.CreateCACertificate(
     caID,                       // subject
     &caCosignerKey.PublicKey,   // CA cosigner public key
     mtc.SignatureP256SHA256,    // CA cosigner signature algorithm
+    big.NewInt(1),              // certificate serial number (nil: random)
     minSerial, maxSerial,
     notBefore, notAfter,
 )
@@ -324,7 +335,7 @@ algorithm:
 
 ```go
 pub, alg, _ := mtc.ParseCosignerPublicKey(spkiDER)
-caCertDER, _ := mtc.CreateCACertificate(caID, pub, alg, minSerial, maxSerial, notBefore, notAfter)
+caCertDER, _ := mtc.CreateCACertificate(caID, pub, alg, serial, minSerial, maxSerial, notBefore, notAfter)
 ```
 
 ### Verifying Certificates (Relying Party)
@@ -523,3 +534,5 @@ Update the headings in COMPARISON-WITH-CACTUS.md to indicate each item that has 
 - [2026-11-12] Add a subcommand to generate an MTC CA Certificate, per https://www.ietf.org/archive/id/draft-ietf-plants-merkle-tree-certs-08.html#section-5.5
 - [2026-11-12] Support ML-DSA key types for "mtc-demo ca cert".  Also allow externally-generated CA public keys to be certified with "mtc-demo ca cert".
 - [2026-11-13] The same CA certificate can be used for a series of logs.  The CQRP says "For any given CA Cosigner Key, Chrome will only trust issuance log numbers 1 through 5".  Make appropriate changes.
+- [2026-11-17] Add a `serial` flag to the "ca cert" tool.  If omitted, the CA cert serial number is set to 1.  If the string "random" is the value of this flag, then generate a random serial number using a CSPRNG (as I presume the current code does).  Otherwise, the flag's value must be used as the serial number - either an integer, or (if "0x" prefix) a hex string.
+- [2026-11-17] Use only flags, rather than a mixture of flags and positional arguments.
