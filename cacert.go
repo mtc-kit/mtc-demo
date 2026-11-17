@@ -187,9 +187,13 @@ func addExtension(b *cryptobyte.Builder, oid asn1.ObjectIdentifier, critical boo
 // id-pe-mtcCertificationAuthority-SHA256 extension with the given serial
 // number bounds.
 //
+// serial is the certificate's own serial number, which must be positive and
+// at most 20 octets (RFC 5280 Section 4.1.2.2). If serial is nil, a random
+// 127-bit serial number is generated using crypto/rand.
+//
 // Per Section 5.5, the certificate is not self-signed. It is an unsigned
 // certificate (RFC 9925) with the id-rdna-unsigned placeholder issuer.
-func CreateCACertificate(caID TrustAnchorID, pub crypto.PublicKey, alg SignatureAlgorithm, minSerial, maxSerial uint64, notBefore, notAfter time.Time) ([]byte, error) {
+func CreateCACertificate(caID TrustAnchorID, pub crypto.PublicKey, alg SignatureAlgorithm, serial *big.Int, minSerial, maxSerial uint64, notBefore, notAfter time.Time) ([]byte, error) {
 	if _, err := caID.OIDName(); err != nil || len(caID) == 0 {
 		return nil, fmt.Errorf("invalid CA ID %q", caID.String())
 	}
@@ -212,12 +216,16 @@ func CreateCACertificate(caID TrustAnchorID, pub crypto.PublicKey, alg Signature
 	}
 
 	// RFC 5280 serial: positive, at most 20 octets.
-	serialBytes := make([]byte, 16)
-	if _, err := rand.Read(serialBytes); err != nil {
-		return nil, err
+	if serial == nil {
+		serialBytes := make([]byte, 16)
+		if _, err := rand.Read(serialBytes); err != nil {
+			return nil, err
+		}
+		serialBytes[0] = serialBytes[0]&0x7f | 0x40
+		serial = new(big.Int).SetBytes(serialBytes)
+	} else if serial.Sign() <= 0 || serial.BitLen() > 159 {
+		return nil, errors.New("serial number must be positive and at most 20 octets")
 	}
-	serialBytes[0] = serialBytes[0]&0x7f | 0x40
-	serial := new(big.Int).SetBytes(serialBytes)
 
 	unsignedAlg := func(b *cryptobyte.Builder) {
 		b.AddASN1(cbasn1.SEQUENCE, func(a *cryptobyte.Builder) {
