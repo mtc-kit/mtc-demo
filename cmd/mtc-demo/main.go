@@ -54,7 +54,7 @@ CA operations:
   ca checkpoint                        Display current checkpoint hash
   ca issue <index>                     Issue a certificate for a log entry
   ca prune <min-index>                 Prune entries below min-index
-  ca cert [-serial <n>] [-public-key <file>]
+  ca cert [-serial <n>] [-validity <days>] [-public-key <file>]
                                        Generate the MTC CA certificate (§5.5)
 
 Cosigner operations:
