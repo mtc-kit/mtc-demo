@@ -101,7 +101,7 @@ mtc-demo ca add <common-name>            Add a TBS certificate entry to the log
 mtc-demo ca checkpoint                   Display current checkpoint and subtree hashes
 mtc-demo ca issue <index>                Issue a certificate for a log entry
 mtc-demo ca prune <min-index>            Prune entries below min-index
-mtc-demo ca cert [-serial <n>] [-public-key <file>]
+mtc-demo ca cert [-serial <n>] [-validity <days>] [-public-key <file>]
                                          Generate the MTC CA certificate (ca-cert.pem)
 ```
 
@@ -132,6 +132,11 @@ from a CSPRNG. It defaults to 1. For example:
 mtc-demo ca cert -serial 0x1234 -public-key ca.pub
 mtc-demo ca cert -serial random
 ```
+
+`-validity` sets the number of days in the CA certificate's validity period
+(default 365). `notBefore` is the current time and, since the validity period
+includes the full second denoted by `notAfter` (RFC 5280 §4.1.2.5),
+`notAfter` is `notBefore` plus the given number of days, minus one second.
 
 ### Cosigner Operations
 
@@ -536,3 +541,4 @@ Update the headings in COMPARISON-WITH-CACTUS.md to indicate each item that has 
 - [2026-11-13] The same CA certificate can be used for a series of logs.  The CQRP says "For any given CA Cosigner Key, Chrome will only trust issuance log numbers 1 through 5".  Make appropriate changes.
 - [2026-11-17] Add a `serial` flag to the "ca cert" tool.  If omitted, the CA cert serial number is set to 1.  If the string "random" is the value of this flag, then generate a random serial number using a CSPRNG (as I presume the current code does).  Otherwise, the flag's value must be used as the serial number - either an integer, or (if "0x" prefix) a hex string.
 - [2026-11-17] Use only flags, rather than a mixture of flags and positional arguments.
+- [2026-11-17] Add a `validity` flag to the "ca cert" tool, to carry the required number of days between the CA cert's notBefore and notAfter timestamps.  Default is 365.  Remember that the full second denoted by notAfter is included in the validity period.

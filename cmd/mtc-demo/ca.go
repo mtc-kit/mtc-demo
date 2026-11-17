@@ -33,7 +33,7 @@ Subcommands:
   checkpoint                  Display current checkpoint hash
   issue <index>               Issue a certificate for a log entry
   prune <min-index>           Prune entries below min-index
-  cert [-serial <n>] [-public-key <file>]
+  cert [-serial <n>] [-validity <days>] [-public-key <file>]
                               Generate the MTC CA certificate (§5.5)
 `)
 		return nil
@@ -377,9 +377,10 @@ func cmdCAPrune(args []string) error {
 const maxCALogNumber = 5
 
 func cmdCACert(args []string) error {
-	const usage = "usage: mtc-demo ca cert [-serial <n>|0x<hex>|random] [-public-key <file.pem>]"
+	const usage = "usage: mtc-demo ca cert [-serial <n>|0x<hex>|random] [-validity <days>] [-public-key <file.pem>]"
 	fs := flag.NewFlagSet("ca cert", flag.ContinueOnError)
 	serialFlag := fs.String("serial", "1", "CA certificate serial number: decimal, 0x-prefixed hex, or \"random\"")
+	validityDays := fs.Int("validity", 365, "CA certificate validity period in days")
 	pubKeyFile := fs.String("public-key", "", "PEM \"PUBLIC KEY\" file of an externally-generated CA cosigner key (default: the CA cosigner in the state file)")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%s: %w", usage, err)
@@ -390,6 +391,9 @@ func cmdCACert(args []string) error {
 	serial, err := parseCACertSerial(*serialFlag)
 	if err != nil {
 		return err
+	}
+	if *validityDays < 1 {
+		return fmt.Errorf("invalid -validity %d: must be at least 1 day", *validityDays)
 	}
 
 	s, err := requireState()
@@ -449,8 +453,13 @@ func cmdCACert(args []string) error {
 	minSerial := uint64(s.LogNumber)<<48 | uint64(s.MinIndex)
 	maxSerial := uint64(maxCALogNumber)<<48 | (1<<48 - 1)
 
-	notBefore := time.Now().Truncate(time.Second)
-	notAfter := notBefore.Add(365 * 24 * time.Hour)
+	// The validity period includes the full second denoted by notAfter
+	// (RFC 5280 Section 4.1.2.5), hence the subtraction.
+	notBefore := time.Now().UTC().Truncate(time.Second)
+	notAfter := notBefore.AddDate(0, 0, *validityDays).Add(-time.Second)
+	if notAfter.Year() > 9999 {
+		return fmt.Errorf("invalid -validity %d: notAfter would be after year 9999", *validityDays)
+	}
 
 	certDER, err := mtc.CreateCACertificate(caID, pub, alg, serial,
 		minSerial, maxSerial, notBefore, notAfter)
@@ -474,7 +483,8 @@ func cmdCACert(args []string) error {
 	fmt.Printf("  Public key: %s (%s)\n", keySource, algorithmName(alg))
 	fmt.Printf("  Min serial: 0x%x (log %d, index %d)\n", minSerial, s.LogNumber, s.MinIndex)
 	fmt.Printf("  Max serial: 0x%x (log %d)\n", maxSerial, maxCALogNumber)
-	fmt.Printf("  Not after:  %s\n", notAfter.UTC().Format(time.RFC3339))
+	fmt.Printf("  Not before: %s\n", notBefore.Format(time.RFC3339))
+	fmt.Printf("  Not after:  %s (%d days)\n", notAfter.Format(time.RFC3339), *validityDays)
 	fmt.Printf("  Size:       %d bytes\n", len(certDER))
 	fmt.Printf("  File:       %s\n", certFile)
 	return nil
