@@ -256,9 +256,10 @@ func CreateCACertificate(caID TrustAnchorID, pub crypto.PublicKey, alg Signature
 						})
 					})
 					addExtension(exts, oidExtKeyUsage, true, func(v *cryptobyte.Builder) {
-						// keyCertSign (bit 5): 2 unused bits, 0b00000100.
+						// digitalSignature (bit 0), keyCertSign (bit 5), and
+						// cRLSign (bit 6): 1 unused bit, 0b10000110.
 						v.AddASN1(cbasn1.BIT_STRING, func(bs *cryptobyte.Builder) {
-							bs.AddBytes([]byte{0x02, 0x04})
+							bs.AddBytes([]byte{0x01, 0x86})
 						})
 					})
 					addExtension(exts, oidExtSubjectKeyID, false, func(v *cryptobyte.Builder) {

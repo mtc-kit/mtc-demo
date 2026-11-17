@@ -131,7 +131,7 @@ func TestCreateCACertificate(t *testing.T) {
 				value    []byte // nil: checked separately
 			}{
 				{oidExtBasicConstraints, true, []byte{0x30, 0x03, 0x01, 0x01, 0xff}},
-				{oidExtKeyUsage, true, []byte{0x03, 0x02, 0x02, 0x04}},
+				{oidExtKeyUsage, true, []byte{0x03, 0x02, 0x01, 0x86}},
 				{oidExtSubjectKeyID, false, skid},
 				{OIDMTCCertificationAuthoritySHA256, true, nil},
 			}
